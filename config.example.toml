@@ -1,0 +1,8 @@
+# Copy to the platform user configuration directory; do not commit the copy.
+host = "127.0.0.1"
+port = 8300
+data_dir = ""
+allowed_local_roots = []
+enable_bilibili = false
+enable_remote_text = false
+log_level = "INFO"
