@@ -1,0 +1,14 @@
+id = "qwen3.5-4b-q6k"
+role = "text_processor"
+version = "bb1c9eab4c528ec32f098d14dbe972df34b7c1a2"
+filename = "Qwen_Qwen3.5-4B-Q6_K.gguf"
+size_bytes = 3671344160
+sha256 = "fd2144baee787fb56605fa4255b224a4ad19032db90b853072b7daff2d505ebb"
+license_id = "Apache-2.0"
+license_url = "https://huggingface.co/Qwen/Qwen3.5-4B"
+sources = ["https://huggingface.co/bartowski/Qwen_Qwen3.5-4B-GGUF/resolve/bb1c9eab4c528ec32f098d14dbe972df34b7c1a2/Qwen_Qwen3.5-4B-Q6_K.gguf?download=true"]
+runtime = "ollama"
+
+[resource_hints]
+cpu_memory = "8GB+"
+gpu_memory = "5GB+"
