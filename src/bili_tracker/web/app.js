@@ -32,13 +32,17 @@ function loadModels() {
       <div class="meta">设备建议：${esc(Object.values(model.resource_hints).join(" · "))}</div>
       <div class="progress" aria-label="安装进度"><i style="width:${Math.round(model.progress * 100)}%"></i></div>
       <div class="meta">状态：${esc(model.state)} · ${Math.round(model.progress * 100)}% · 剩余 ${formatBytes(model.remaining_bytes)} · ${formatSpeed(model.speed_bytes_per_sec)}</div>
-      <button data-model="${esc(model.id)}" ${model.state === "ready" || model.state === "downloading" ? "disabled" : ""}>${model.state === "awaiting_license" ? "接受许可证并安装" : "安装 / 修复"}</button>
+      <div class="button-row">
+        <button data-model-install="${esc(model.id)}" ${model.state === "ready" || model.state === "downloading" ? "disabled" : ""}>${model.state === "awaiting_license" ? "接受许可证并安装" : "安装 / 修复"}</button>
+        ${model.state === "downloading" ? `<button class="secondary" data-model-cancel="${esc(model.id)}">暂停</button>` : ""}
+        ${model.state === "ready" ? `<button class="secondary" data-model-verify="${esc(model.id)}">验证</button><button class="secondary" data-model-remove="${esc(model.id)}">卸载</button>` : ""}
+      </div>
     </article>`).join("");
-    document.querySelectorAll("[data-model]").forEach(button => button.addEventListener("click", async () => {
+    document.querySelectorAll("[data-model-install]").forEach(button => button.addEventListener("click", async () => {
       button.disabled = true;
       document.querySelector("#model-live").textContent = "安装任务已启动";
       try {
-        await api(`/models/${button.dataset.model}/install`, {
+        await api(`/models/${button.dataset.modelInstall}/install`, {
           method: "POST", body: JSON.stringify({ accept_license: true }),
         });
         scheduleModelRefresh();
@@ -46,6 +50,20 @@ function loadModels() {
         document.querySelector("#model-live").textContent = `安装失败：${error.message}`;
         button.disabled = false;
       }
+    }));
+    document.querySelectorAll("[data-model-cancel]").forEach(button => button.addEventListener("click", async () => {
+      await api(`/models/${button.dataset.modelCancel}/cancel`, { method: "POST" });
+      await loadModels();
+    }));
+    document.querySelectorAll("[data-model-verify]").forEach(button => button.addEventListener("click", async () => {
+      const result = await api(`/models/${button.dataset.modelVerify}/verify`, { method: "POST" });
+      document.querySelector("#model-live").textContent = result.verified ? "模型验证通过" : "模型验证失败";
+      await loadModels();
+    }));
+    document.querySelectorAll("[data-model-remove]").forEach(button => button.addEventListener("click", async () => {
+      if (!confirm("确认卸载受管模型？")) return;
+      await api(`/models/${button.dataset.modelRemove}`, { method: "DELETE" });
+      await loadModels();
     }));
     return models;
   }).finally(() => { modelRequest = null; });
@@ -82,6 +100,38 @@ async function loadJobDetail(jobId) {
   detail.hidden = false;
   document.querySelector("#delete-job").dataset.jobId = job.id;
   document.querySelector("#job-detail-meta").textContent = `${job.id} · ${job.state}${job.degraded ? " · degraded" : ""}${job.error_code ? ` · ${job.error_code}` : ""}`;
+  const actions = {
+    queued: ["run", "运行"],
+    failed: ["retry", "重试"],
+    completed: ["rebuild", "重建整理稿"],
+    acquiring: ["cancel", "取消"],
+    transcribing: ["cancel", "取消"],
+    refining: ["cancel", "取消"],
+    reviewing: ["cancel", "取消"],
+    packaging: ["cancel", "取消"],
+  }[job.state];
+  document.querySelector("#job-actions").innerHTML = actions
+    ? `<button class="secondary" data-job-action="${actions[0]}">${actions[1]}</button>`
+    : "";
+  const manifestArtifact = job.artifacts.find(item => item.kind === "manifest");
+  if (manifestArtifact) {
+    try {
+      const manifest = await (await fetch(manifestArtifact.download_url)).json();
+      const processing = manifest.processing || {};
+      document.querySelector("#job-processing-meta").textContent = `处理：${esc(processing.transcriber_id || "未知")}${processing.model_id ? ` · 模型 ${esc(processing.model_id)}` : ""}${processing.device ? ` · 设备 ${esc(processing.device)}` : ""}${processing.elapsed_seconds ? ` · ${processing.elapsed_seconds}s` : ""}`;
+    } catch (_) { document.querySelector("#job-processing-meta").textContent = "处理元数据暂不可用"; }
+  } else {
+    document.querySelector("#job-processing-meta").textContent = "";
+  }
+  const actionButton = document.querySelector("#job-actions [data-job-action]");
+  if (actionButton) actionButton.addEventListener("click", async () => {
+    actionButton.disabled = true;
+    try {
+      await api(`/jobs/${job.id}/${actionButton.dataset.jobAction}`, { method: "POST" });
+      await loadJobs();
+      await loadJobDetail(job.id);
+    } catch (error) { document.querySelector("#job-detail-meta").textContent = `操作失败：${error.message}`; actionButton.disabled = false; }
+  });
   const textKinds = ["raw", "refined", "final"];
   const blocks = await Promise.all(textKinds.map(async kind => {
     const artifact = job.artifacts.find(item => item.kind === kind);

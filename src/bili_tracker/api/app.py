@@ -22,6 +22,7 @@ from bili_tracker.adapters.sources.bilibili import BilibiliClient, BilibiliSourc
 from bili_tracker.adapters.sources.local_file import LocalFileSource
 from bili_tracker.adapters.sources.ytdlp import YtDlpSource
 from bili_tracker.adapters.text.ollama import OllamaTextProcessor
+from bili_tracker.adapters.text.quality import DeterministicQualityGate
 from bili_tracker.adapters.transcribers.whisper import WhisperTranscriber
 from bili_tracker.application.discovery import Candidate, QuantitativeRanker
 from bili_tracker.application.pipeline import JobRunner
@@ -158,6 +159,11 @@ class AppContainer:
                     ProcessingProfile(job.profile_id),
                     text_processor=(
                         OllamaTextProcessor()
+                        if self.settings.get("enable_remote_text")
+                        else None
+                    ),
+                    quality_gate=(
+                        DeterministicQualityGate()
                         if self.settings.get("enable_remote_text")
                         else None
                     ),
