@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+import tomllib
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -20,21 +22,73 @@ def _default_data_dir() -> Path:
 class RuntimeConfig:
     host: str = "127.0.0.1"
     port: int = 8300
-    data_dir: Path = _default_data_dir()
+    data_dir: Path = field(default_factory=_default_data_dir)
+    allowed_local_roots: tuple[Path, ...] = ()
     enable_bilibili: bool = False
     enable_remote_text: bool = False
+    log_level: str = "INFO"
+
+    @staticmethod
+    def user_config_path(environ: Mapping[str, str] | None = None) -> Path:
+        env = environ if environ is not None else os.environ
+        if os.name == "nt":
+            base = Path(env.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        else:
+            base = Path(env.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        return base / "bili-tracker" / "config.toml"
+
+    @classmethod
+    def load(
+        cls,
+        cli: Mapping[str, object] | None = None,
+        environ: Mapping[str, str] | None = None,
+        config_path: Path | None = None,
+    ) -> RuntimeConfig:
+        env = environ or os.environ
+        values: dict[str, object] = {}
+        path = config_path or cls.user_config_path(env)
+        if path.is_file():
+            with path.open("rb") as handle:
+                values.update(tomllib.load(handle))
+        env_values: dict[str, object] = {}
+        mapping = {
+            "host": "BILI_TRACKER_HOST",
+            "port": "BILI_TRACKER_PORT",
+            "data_dir": "BILI_TRACKER_DATA_DIR",
+            "log_level": "BILI_TRACKER_LOG_LEVEL",
+        }
+        for key, env_key in mapping.items():
+            if env_key in env and env[env_key] != "":
+                env_values[key] = env[env_key]
+        bool_mapping = {
+            "enable_bilibili": "BILI_TRACKER_ENABLE_BILIBILI",
+            "enable_remote_text": "BILI_TRACKER_ENABLE_REMOTE_TEXT",
+        }
+        for key, env_key in bool_mapping.items():
+            if env_key in env:
+                env_values[key] = env[env_key] in {"1", "true", "True", "yes"}
+        if "BILI_TRACKER_ALLOWED_LOCAL_ROOTS" in env:
+            env_values["allowed_local_roots"] = env["BILI_TRACKER_ALLOWED_LOCAL_ROOTS"].split(
+                os.pathsep
+            )
+        values.update(env_values)
+        values.update({key: value for key, value in (cli or {}).items() if value is not None})
+        roots = values.get("allowed_local_roots", ())
+        if isinstance(roots, str):
+            roots = [roots]
+        return cls(
+            host=str(values.get("host", cls.host)),
+            port=int(values.get("port", cls.port)),
+            data_dir=Path(values.get("data_dir") or _default_data_dir()).expanduser(),
+            allowed_local_roots=tuple(Path(root).expanduser() for root in roots if root),
+            enable_bilibili=bool(values.get("enable_bilibili", cls.enable_bilibili)),
+            enable_remote_text=bool(values.get("enable_remote_text", cls.enable_remote_text)),
+            log_level=str(values.get("log_level", cls.log_level)).upper(),
+        )
 
     @classmethod
     def from_env(cls) -> RuntimeConfig:
-        return cls(
-            host=os.environ.get("BILI_TRACKER_HOST", cls.host),
-            port=int(os.environ.get("BILI_TRACKER_PORT", cls.port)),
-            data_dir=Path(
-                os.environ.get("BILI_TRACKER_DATA_DIR", str(_default_data_dir()))
-            ).expanduser(),
-            enable_bilibili=os.environ.get("BILI_TRACKER_ENABLE_BILIBILI", "0") == "1",
-            enable_remote_text=os.environ.get("BILI_TRACKER_ENABLE_REMOTE_TEXT", "0") == "1",
-        )
+        return cls.load()
 
     def ensure_data_dir(self) -> Path:
         self.data_dir.mkdir(parents=True, exist_ok=True)
