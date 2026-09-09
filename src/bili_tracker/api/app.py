@@ -26,7 +26,7 @@ from bili_tracker.domain.jobs import ArtifactKind, Job, JobState
 from bili_tracker.domain.models import ManagedModel, ModelState
 from bili_tracker.domain.ports import SourceAdapter, SourceInput
 from bili_tracker.domain.profiles import ProcessingProfile
-from bili_tracker.models.manager import ModelManager
+from bili_tracker.models.manager import ModelConflict, ModelManager
 from bili_tracker.models.registry import ModelRegistry
 from bili_tracker.storage.artifacts import LocalArtifactStore
 from bili_tracker.storage.backup import BackupError, BackupManager
@@ -135,7 +135,8 @@ class AppContainer:
         try:
             source_kind, _ = job.source_ref.split(":", 1)
             source = self.source(source_kind)
-            model_path = self.model_root / "whisper-large-v3-turbo.pt"
+            whisper_asset = self.registry.get("whisper-large-v3-turbo")
+            model_path = self.model_root / whisper_asset.filename
             if not model_path.is_file():
                 job.begin_attempt()
                 job.fail("model.not_ready")
@@ -294,11 +295,13 @@ def create_app(
     @app.delete("/api/v1/models/{model_id}")
     def remove_model(model_id: str) -> dict[str, object]:
         try:
-            services.models.remove(model_id)
+            services.models.remove(model_id, runtime=_runtime(services, model_id))
         except KeyError as exc:
             raise ApiFailure("model.not_found", status_code=404) from exc
-        except RuntimeError as exc:
+        except ModelConflict as exc:
             raise ApiFailure("model.in_use", status_code=409) from exc
+        except RuntimeError as exc:
+            raise ApiFailure("model.runtime_remove_failed", status_code=502) from exc
         return {"model": _model_dto(services.models, model_id)}
 
     @app.post("/api/v1/sources/probe")

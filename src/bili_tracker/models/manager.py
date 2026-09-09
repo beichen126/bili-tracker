@@ -143,14 +143,18 @@ class ModelManager:
         asset = self.registry.get(model_id)
         return self.downloader._matches(self.model_root / asset.filename, asset)
 
-    def remove(self, model_id: str, *, references: int = 0) -> None:
+    def remove(
+        self, model_id: str, *, references: int = 0, runtime: ModelRuntime | None = None
+    ) -> None:
         if references:
             raise ModelConflict("managed model is referenced by an active job")
         asset = self.registry.get(model_id)
         with self._lock:
+            state = self._load(asset)
+            if runtime and state.state == ModelState.READY:
+                runtime.remove(state)
             (self.model_root / asset.filename).unlink(missing_ok=True)
             (self.model_root / f".{asset.filename}.part").unlink(missing_ok=True)
-            state = self._load(asset)
             state.state = ModelState.NOT_INSTALLED
             state.downloaded_bytes = 0
             state.operation_id = None

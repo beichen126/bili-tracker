@@ -4,6 +4,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 
 from bili_tracker.domain.errors import InvalidTransition, ManifestError
 
@@ -76,7 +77,10 @@ class ModelAsset:
             )
         model_id = str(values["id"])
         sha256 = str(values["sha256"]).lower()
-        sources = tuple(str(source) for source in values["sources"] if source)
+        raw_sources = values["sources"]
+        if not isinstance(raw_sources, (list, tuple)):
+            raise ManifestError("model.source_invalid", "sources must be a list")
+        sources = tuple(str(source) for source in raw_sources if source)
         if not re.fullmatch(r"[a-z0-9][a-z0-9._-]+", model_id):
             raise ManifestError("model.id_invalid", "model id contains unsupported characters")
         if not re.fullmatch(r"[0-9a-f]{64}", sha256):
@@ -85,6 +89,10 @@ class ModelAsset:
             )
         if int(values["size_bytes"]) <= 0:
             raise ManifestError("model.size_invalid", "model size must be positive")
+        if Path(values["filename"]).name != str(values["filename"]):
+            raise ManifestError(
+                "model.filename_invalid", "model filename must be a plain filename"
+            )
         if not str(values["license_url"]).startswith("https://"):
             raise ManifestError("model.license_url_invalid", "license URL must use HTTPS")
         if not sources or any(not source.startswith("https://") for source in sources):

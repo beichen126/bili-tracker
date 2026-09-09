@@ -117,7 +117,9 @@ class YtDlpSource:
 
     def _validate_url(self, value: str) -> str:
         try:
-            parsed = UrlPolicy(allowed_hosts=frozenset(self.allowed_domains)).validate(value)
+            parsed = UrlPolicy(
+                allowed_hosts=frozenset(self.allowed_domains), resolve_dns=True
+            ).validate(value)
         except UrlPolicyError as exc:
             raise YtDlpError("source.url_not_allowed") from exc
         hostname = parsed.hostname.lower().rstrip(".")

@@ -71,7 +71,8 @@ class LocalFileSource:
         finally:
             temp.unlink(missing_ok=True)
         metadata = self.probe(SourceInput(source.kind, str(path)))
-        return AcquiredMedia(target, self._types[path.suffix.lower()], metadata)
+        media_type = self._types.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0]
+        return AcquiredMedia(target, media_type or "application/octet-stream", metadata)
 
     def _validate(self, locator: str) -> Path:
         candidate = Path(locator).expanduser()
