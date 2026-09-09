@@ -17,6 +17,7 @@ from bili_tracker.adapters.sources.bilibili import BilibiliClient, BilibiliSourc
 from bili_tracker.adapters.sources.local_file import LocalFileSource
 from bili_tracker.adapters.sources.ytdlp import YtDlpSource
 from bili_tracker.adapters.transcribers.whisper import WhisperTranscriber
+from bili_tracker.application.discovery import Candidate, QuantitativeRanker
 from bili_tracker.application.pipeline import JobRunner
 from bili_tracker.config.runtime import RuntimeConfig
 from bili_tracker.domain.jobs import ArtifactKind, Job, JobState
@@ -62,6 +63,12 @@ class SettingsBody(BaseModel):
     enable_remote_text: bool | None = None
     bilibili_cookie: str | None = Field(default=None, max_length=10_000)
     deepseek_api_key: str | None = Field(default=None, max_length=500)
+
+
+class DiscoveryBody(BaseModel):
+    query: str = Field(min_length=1, max_length=100)
+    page: int = Field(default=1, ge=1, le=100)
+    page_size: int = Field(default=20, ge=1, le=50)
 
 
 class AppContainer:
@@ -286,6 +293,44 @@ def create_app(
                 "duration_seconds": metadata.duration_seconds,
                 "display_locator": metadata.display_locator,
             }
+        }
+
+    @app.post("/api/v1/discovery/search")
+    def discovery_search(body: DiscoveryBody) -> dict[str, object]:
+        source = services.sources.get("bilibili")
+        if not isinstance(source, BilibiliSource):
+            raise ApiFailure("discovery.disabled", status_code=409)
+        try:
+            rows = source.client.search(body.query, page=body.page, page_size=body.page_size)
+        except Exception as exc:
+            raise ApiFailure(getattr(exc, "code", "discovery.failed"), status_code=422) from exc
+        candidates = [
+            Candidate(
+                id=str(row["bvid"]),
+                title=str(row["title"]),
+                url=str(row["url"]),
+                duration_seconds=float(row["duration_seconds"])
+                if isinstance(row.get("duration_seconds"), (int, float))
+                else None,
+                views=int(row.get("views", 0)),
+            )
+            for row in rows
+        ]
+        ranked = QuantitativeRanker().rank(candidates, query=body.query)
+        return {
+            "candidates": [
+                {
+                    "id": item.id,
+                    "title": item.title,
+                    "url": item.url,
+                    "quantitative_score": item.quantitative_score,
+                    "remote_score": item.remote_score,
+                    "final_score": item.final_score,
+                    "filter_reason": item.filter_reason,
+                }
+                for item in ranked
+            ],
+            "ranking_mode": "quantitative",
         }
 
     @app.post("/api/v1/jobs", status_code=201)
