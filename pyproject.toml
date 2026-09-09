@@ -33,7 +33,7 @@ bili-tracker = "bili_tracker.cli.main:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-bili_tracker = ["web/*"]
+bili_tracker = ["web/*", "model-manifests/*.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

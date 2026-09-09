@@ -58,6 +58,13 @@ def test_api_models_settings_jobs_and_static_ui_are_public_contract(tmp_path):
     assert client.get("/").status_code == 200
 
 
+def test_packaged_manifest_directory_is_used_when_source_root_is_absent(monkeypatch):
+    from bili_tracker.api import app as api_module
+
+    registry = api_module._load_registry()
+    assert len(registry.all()) == 2
+
+
 def test_model_license_gate_is_idempotent(tmp_path):
     client = TestClient(create_app(RuntimeConfig(data_dir=tmp_path)))
     first = client.post(

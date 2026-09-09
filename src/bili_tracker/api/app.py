@@ -514,10 +514,14 @@ def create_app(
 
 
 def _load_registry() -> ModelRegistry:
-    directory = Path(__file__).resolve().parents[3] / "model-manifests"
-    if not directory.is_dir():
-        return ModelRegistry({})
-    return ModelRegistry.from_directory(directory)
+    candidates = (
+        Path(__file__).resolve().parents[1] / "model-manifests",
+        Path(__file__).resolve().parents[3] / "model-manifests",
+    )
+    for directory in candidates:
+        if directory.is_dir():
+            return ModelRegistry.from_directory(directory)
+    return ModelRegistry({})
 
 
 def _runtime(services: AppContainer, model_id: str):
