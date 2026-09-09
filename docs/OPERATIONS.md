@@ -23,6 +23,10 @@ Run `bili-tracker doctor` for a redacted local configuration check. Health is
 deliberately minimal. Use the model center error code and the job error code
 for support; preserve the raw artifact before attempting a rebuild.
 
+`bili-tracker doctor` reports only redacted readiness flags for FFmpeg, model
+manifests and optional Whisper/Ollama runtimes. It never prints the data
+directory, credentials or local input roots.
+
 The model lifecycle is also available as machine-readable CLI commands:
 `bili-tracker models list`, `install`, `cancel`, `verify`, `repair` and
 `remove`. `python scripts/release/benchmark_jobs.py` measures the 1,000-job

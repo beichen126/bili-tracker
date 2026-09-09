@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import shutil
 
 from bili_tracker import __version__
-from bili_tracker.api.app import AppContainer, _model_dto, _runtime, create_app
+from bili_tracker.api.app import AppContainer, _load_registry, _model_dto, _runtime, create_app
 from bili_tracker.config.runtime import RuntimeConfig
 
 
@@ -40,9 +42,18 @@ def main(argv: list[str] | None = None) -> int:
         }
     )
     if args.command == "doctor":
+        ffmpeg_ready = shutil.which("ffmpeg") is not None
+        whisper_ready = importlib.util.find_spec("whisper") is not None
+        ollama_ready = shutil.which("ollama") is not None
         payload = {
-            "status": "ok",
-            "data_dir_configured": bool(config.data_dir),
+            "status": "ok" if ffmpeg_ready else "warning",
+            "data_dir_exists": config.data_dir.is_dir(),
+            "ffmpeg": "ready" if ffmpeg_ready else "missing",
+            "models_registered": len(_load_registry().all()),
+            "optional": {
+                "whisper_python": "ready" if whisper_ready else "missing",
+                "ollama_executable": "ready" if ollama_ready else "missing",
+            },
             "loopback_default": config.host in {"127.0.0.1", "::1", "localhost"},
         }
         print(json.dumps(payload, ensure_ascii=False))

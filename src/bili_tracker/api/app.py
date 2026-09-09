@@ -27,6 +27,7 @@ from bili_tracker.adapters.transcribers.whisper import WhisperTranscriber
 from bili_tracker.application.discovery import Candidate, QuantitativeRanker
 from bili_tracker.application.pipeline import JobRunner
 from bili_tracker.config.runtime import RuntimeConfig
+from bili_tracker.config.secrets import SecretValue
 from bili_tracker.domain.errors import InvariantViolation
 from bili_tracker.domain.jobs import ArtifactKind, Job, JobState
 from bili_tracker.domain.models import ManagedModel, ModelState
@@ -90,11 +91,19 @@ class AppContainer:
         self.model_root = data_dir / "models"
         self.registry = registry or _load_registry()
         self.models = ModelManager(self.registry, self.model_root)
+        self.secret_values: dict[str, SecretValue] = {}
         self.sources: dict[str, SourceAdapter] = {"url": YtDlpSource()}
         if not config.remote_mode:
             self.sources["local"] = LocalFileSource(config.allowed_local_roots)
         if config.enable_bilibili:
-            self.sources["bilibili"] = BilibiliSource(BilibiliClient())
+            self.sources["bilibili"] = BilibiliSource(
+                BilibiliClient(
+                    cookie_provider=lambda name: (
+                        self.secret_values[name].value if name in self.secret_values else None
+                    ),
+                    cookie_secret_name="bilibili_cookie",
+                )
+            )
         self.settings: dict[str, object] = {
             "enable_bilibili": config.enable_bilibili,
             "enable_remote_text": config.enable_remote_text,
@@ -563,8 +572,10 @@ def create_app(
                 }
             )
         if body.bilibili_cookie is not None:
+            services.secret_values["bilibili_cookie"] = SecretValue(body.bilibili_cookie)
             services.settings["bilibili_cookie_configured"] = bool(body.bilibili_cookie)
         if body.deepseek_api_key is not None:
+            services.secret_values["deepseek_api_key"] = SecretValue(body.deepseek_api_key)
             services.settings["deepseek_api_key_configured"] = bool(body.deepseek_api_key)
         return {"settings": dict(services.settings)}
 
