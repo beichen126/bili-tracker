@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import threading
 import uuid
 from pathlib import Path
 
 from bili_tracker.domain.models import ManagedModel, ModelAsset, ModelState
 from bili_tracker.domain.ports import ModelRuntime, ProgressSink
-from bili_tracker.models.downloader import ResumableDownloader
+from bili_tracker.models.downloader import DownloadCancelled, DownloadError, ResumableDownloader
 from bili_tracker.models.registry import ModelRegistry
 
 
@@ -51,7 +52,19 @@ class ModelManager:
                     model.transition(ModelState.AWAITING_LICENSE)
                 self._save(model)
                 return model
+            available = shutil.disk_usage(self.model_root).free
+            if available < asset.size_bytes:
+                if model.state == ModelState.CHECKING:
+                    model.transition(ModelState.AWAITING_LICENSE)
+                if model.state == ModelState.AWAITING_LICENSE:
+                    model.transition(ModelState.BLOCKED)
+                model.error_code = "model.disk_space_insufficient"
+                self._save(model)
+                return model
             if model.state == ModelState.AWAITING_LICENSE:
+                model.transition(ModelState.DOWNLOADING)
+            elif model.state == ModelState.CHECKING:
+                model.transition(ModelState.AWAITING_LICENSE)
                 model.transition(ModelState.DOWNLOADING)
             elif model.state in {ModelState.BLOCKED, ModelState.FAILED}:
                 model.transition(ModelState.CHECKING)
@@ -61,11 +74,22 @@ class ModelManager:
                 model.transition(ModelState.DOWNLOADING)
             model.operation_id = model.operation_id or uuid.uuid4().hex
             self._save(model)
-            result = self.downloader.download(
-                asset,
-                self.model_root,
-                progress=lambda done, total: self._progress(model, done, total, progress),
-            )
+            try:
+                result = self.downloader.download(
+                    asset,
+                    self.model_root,
+                    progress=lambda done, total: self._progress(model, done, total, progress),
+                )
+            except DownloadCancelled as exc:
+                model.transition(ModelState.PAUSED)
+                model.error_code = exc.code
+                self._save(model)
+                return model
+            except DownloadError as exc:
+                model.transition(ModelState.FAILED)
+                model.error_code = exc.code
+                self._save(model)
+                return model
             model.downloaded_bytes = result.path.stat().st_size
             model.transition(ModelState.VERIFYING)
             self._save(model)
@@ -75,9 +99,21 @@ class ModelManager:
                 self._save(model)
                 return model
             model.transition(ModelState.DEPLOYING)
-            runtime.deploy(asset, progress or (lambda _value, _message: None))
+            try:
+                runtime.deploy(asset, progress or (lambda _value, _message: None))
+            except Exception as exc:
+                model.transition(ModelState.FAILED)
+                model.error_code = getattr(exc, "code", None) or "model.runtime_deploy_failed"
+                self._save(model)
+                return model
             model.transition(ModelState.VALIDATING)
-            verdict = runtime.validate(model)
+            try:
+                verdict = runtime.validate(model)
+            except Exception as exc:
+                model.transition(ModelState.FAILED)
+                model.error_code = getattr(exc, "code", None) or "model.runtime_validation_failed"
+                self._save(model)
+                return model
             if not verdict.passed:
                 model.transition(ModelState.FAILED)
                 model.error_code = verdict.reason_code
