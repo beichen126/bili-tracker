@@ -62,7 +62,7 @@ class OllamaRuntime(ModelRuntime):
         if not self.executable:
             raise RuntimeMissing("Ollama is not installed")
         result = subprocess.run(
-            [self.executable, "rm", model.asset.id],
+            [self.executable, "rm", self.model_name],
             capture_output=True,
             text=True,
             check=False,

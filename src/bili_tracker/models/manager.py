@@ -31,6 +31,7 @@ class ModelManager:
         self.state_path = (state_path or self.model_root / "model-state.json").resolve()
         self.downloader = downloader or ResumableDownloader()
         self._lock = threading.RLock()
+        self._cancel_events: dict[str, threading.Event] = {}
 
     def install(
         self,
@@ -39,12 +40,15 @@ class ModelManager:
         accept_license: bool,
         runtime: ModelRuntime,
         progress: ProgressSink | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> ManagedModel:
         with self._lock:
             asset = self.registry.get(model_id)
             model = self._load(asset)
             if model.state == ModelState.READY and self.verify(model_id):
                 return model
+            if model.state == ModelState.READY:
+                model.transition(ModelState.CHECKING)
             if model.state == ModelState.NOT_INSTALLED:
                 model.transition(ModelState.CHECKING)
             if not accept_license:
@@ -73,12 +77,15 @@ class ModelManager:
             elif model.state != ModelState.DOWNLOADING:
                 model.transition(ModelState.DOWNLOADING)
             model.operation_id = model.operation_id or uuid.uuid4().hex
+            active_cancel = cancel_event or threading.Event()
+            self._cancel_events[model_id] = active_cancel
             self._save(model)
             try:
                 result = self.downloader.download(
                     asset,
                     self.model_root,
                     progress=lambda done, total: self._progress(model, done, total, progress),
+                    cancel_event=active_cancel,
                 )
             except DownloadCancelled as exc:
                 model.transition(ModelState.PAUSED)
@@ -121,7 +128,16 @@ class ModelManager:
                 return model
             model.ready()
             self._save(model)
+            self._cancel_events.pop(model_id, None)
             return model
+
+    def cancel(self, model_id: str) -> ManagedModel:
+        asset = self.registry.get(model_id)
+        model = self._load(asset)
+        event = self._cancel_events.get(model_id)
+        if event:
+            event.set()
+        return model
 
     def verify(self, model_id: str) -> bool:
         asset = self.registry.get(model_id)

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>bili-tracker</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div><span class="eyebrow">LOCAL-FIRST WORKBENCH</span><h1>bili-tracker</h1></div>
+    <span id="health" class="badge" aria-live="polite">检查环境中…</span>
+  </header>
+  <main class="layout">
+    <section class="hero" aria-labelledby="intro-title">
+      <p class="eyebrow">PRIVATE BY DEFAULT</p>
+      <h2 id="intro-title">把视频变成可检索的文字。</h2>
+      <p>媒体、原始转写和整理稿默认留在本机。模型中心显示完整状态，任务详情保留 raw / refined / final 的边界。</p>
+    </section>
+    <section class="panel" aria-labelledby="models-title">
+      <div class="section-heading"><div><p class="eyebrow">MODEL CENTER</p><h2 id="models-title">模型中心</h2></div><span id="model-live" aria-live="polite"></span></div>
+      <div id="models" class="cards" aria-live="polite"></div>
+    </section>
+    <section class="panel" aria-labelledby="submit-title">
+      <div class="section-heading"><div><p class="eyebrow">QUEUE</p><h2 id="submit-title">提交任务</h2></div></div>
+      <form id="job-form">
+        <label for="source-kind">来源类型</label>
+        <select id="source-kind"><option value="local">本地文件</option><option value="bilibili">Bilibili URL</option><option value="url">受支持 URL</option></select>
+        <label for="source-locator">路径或 URL</label>
+        <input id="source-locator" required maxlength="2000" autocomplete="off" placeholder="先在设置中允许本地目录">
+        <button type="submit">解析并加入队列</button>
+        <p id="submit-result" class="hint" role="status"></p>
+      </form>
+    </section>
+    <section class="panel" aria-labelledby="jobs-title">
+      <div class="section-heading"><div><p class="eyebrow">ACTIVITY</p><h2 id="jobs-title">任务列表</h2></div><button id="refresh" class="secondary" type="button">刷新</button></div>
+      <div id="jobs" class="jobs" aria-live="polite"></div>
+    </section>
+    <section class="panel settings" aria-labelledby="settings-title">
+      <div class="section-heading"><div><p class="eyebrow">CONTROLLED INTEGRATIONS</p><h2 id="settings-title">设置</h2></div></div>
+      <label><input id="enable-bilibili" type="checkbox"> 启用 Bilibili 解析与发现</label>
+      <label><input id="enable-remote-text" type="checkbox"> 启用外部文本服务（会发送转写文本）</label>
+      <button id="save-settings" type="button">保存设置</button>
+      <p id="settings-result" class="hint" role="status"></p>
+    </section>
+  </main>
+  <footer>默认绑定本机 · 不绕过 DRM、付费墙或访问控制 · <a href="/docs">API 文档</a></footer>
+  <script src="/app.js" defer></script>
+</body>
+</html>

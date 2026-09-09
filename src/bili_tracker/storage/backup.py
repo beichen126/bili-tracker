@@ -87,6 +87,11 @@ class BackupManager:
                 os.replace(previous, self.data_root)
             raise
 
+    def validate(self, archive_path: Path) -> None:
+        archive_path = archive_path.expanduser().resolve(strict=True)
+        with tempfile.TemporaryDirectory(prefix="bili-tracker-backup-check-") as temp_dir:
+            self._extract_and_validate(archive_path, Path(temp_dir) / "staging")
+
     def _extract_and_validate(self, archive_path: Path, staging: Path) -> None:
         staging.mkdir(parents=True, exist_ok=False)
         try:
