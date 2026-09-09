@@ -38,7 +38,7 @@ class OllamaTextProcessor(TextProcessor):
         model: str = "bili-tracker-qwen3.5-4b-q6k",
         base_url: str = "http://127.0.0.1:11434",
         max_chars: int = 6000,
-        timeout: float = 60.0,
+        timeout: float = 180.0,
         allow_remote: bool = False,
     ) -> None:
         parsed = urlparse(base_url)
