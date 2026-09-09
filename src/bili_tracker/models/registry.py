@@ -17,7 +17,7 @@ class ModelRegistry:
         cls,
         directory: Path,
         allowed_domains: set[str] | None = None,
-    ) -> "ModelRegistry":
+    ) -> ModelRegistry:
         domains = allowed_domains or {"openaipublic.azureedge.net", "huggingface.co"}
         assets: dict[str, ModelAsset] = {}
         for path in sorted(directory.glob("*.toml")):
