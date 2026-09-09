@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bili-tracker"
-version = "0.1.0"
+version = "1.0.0"
 description = "Local-first Bilibili media tracker and transcript workbench"
 readme = "README.md"
 requires-python = ">=3.11"

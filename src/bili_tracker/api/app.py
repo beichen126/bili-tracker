@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -82,10 +83,9 @@ class AppContainer:
         self.model_root = data_dir / "models"
         self.registry = registry or _load_registry()
         self.models = ModelManager(self.registry, self.model_root)
-        self.sources: dict[str, SourceAdapter] = {
-            "local": LocalFileSource(config.allowed_local_roots),
-            "url": YtDlpSource(),
-        }
+        self.sources: dict[str, SourceAdapter] = {"url": YtDlpSource()}
+        if not config.remote_mode:
+            self.sources["local"] = LocalFileSource(config.allowed_local_roots)
         if config.enable_bilibili:
             self.sources["bilibili"] = BilibiliSource(BilibiliClient())
         self.settings: dict[str, object] = {
@@ -137,6 +137,7 @@ class AppContainer:
             source = self.source(source_kind)
             model_path = self.model_root / "whisper-large-v3-turbo.pt"
             if not model_path.is_file():
+                job.begin_attempt()
                 job.fail("model.not_ready")
                 self.repository.save(job)
                 return
@@ -176,6 +177,14 @@ def create_app(
     services = container or AppContainer(settings)
     app = FastAPI(title="bili-tracker", version=__version__)
     app.state.container = services
+    if settings.allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.allowed_origins),
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "PATCH", "DELETE"],
+            allow_headers=["Authorization", "Content-Type"],
+        )
 
     @app.middleware("http")
     async def remote_auth(request, call_next):
@@ -264,7 +273,10 @@ def create_app(
 
     @app.post("/api/v1/models/{model_id}/cancel")
     def cancel_model(model_id: str) -> dict[str, object]:
-        services.models.cancel(model_id)
+        try:
+            services.models.cancel(model_id)
+        except KeyError as exc:
+            raise ApiFailure("model.not_found", status_code=404) from exc
         return {"model": _model_dto(services.models, model_id)}
 
     @app.post("/api/v1/models/{model_id}/verify")
@@ -283,6 +295,8 @@ def create_app(
     def remove_model(model_id: str) -> dict[str, object]:
         try:
             services.models.remove(model_id)
+        except KeyError as exc:
+            raise ApiFailure("model.not_found", status_code=404) from exc
         except RuntimeError as exc:
             raise ApiFailure("model.in_use", status_code=409) from exc
         return {"model": _model_dto(services.models, model_id)}
@@ -298,7 +312,7 @@ def create_app(
         return {
             "source": {
                 "kind": body.kind,
-                "canonical_id": metadata.canonical_id,
+                "canonical_id": None if body.kind == "local" else metadata.canonical_id,
                 "title": metadata.title,
                 "duration_seconds": metadata.duration_seconds,
                 "display_locator": metadata.display_locator,

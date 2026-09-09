@@ -9,7 +9,7 @@ def test_health_is_minimal(tmp_path):
     client = TestClient(create_app(RuntimeConfig(data_dir=tmp_path)))
     response = client.get("/api/v1/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "version": "0.1.0"}
+    assert response.json() == {"status": "ok", "version": "1.0.0"}
 
 
 def test_doctor_does_not_print_absolute_data_path(capsys, tmp_path, monkeypatch):
@@ -41,6 +41,7 @@ def test_api_models_settings_jobs_and_static_ui_are_public_contract(tmp_path):
 
     probe = client.post("/api/v1/sources/probe", json={"kind": "local", "locator": str(media)})
     assert probe.status_code == 200
+    assert probe.json()["source"]["canonical_id"] is None
     assert probe.json()["source"]["display_locator"] == "lesson.wav"
     assert str(tmp_path) not in probe.text
     jobs = client.post(
@@ -94,3 +95,7 @@ def test_remote_mode_requires_bearer_token_and_does_not_echo_it(tmp_path):
     )
     assert response.status_code == 200
     assert "keep-this-private" not in response.text
+    capabilities = client.get(
+        "/api/v1/capabilities", headers={"Authorization": "Bearer keep-this-private"}
+    )
+    assert {item["id"] for item in capabilities.json()["sources"]} == {"url"}

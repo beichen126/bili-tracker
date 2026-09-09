@@ -30,6 +30,7 @@ class RuntimeConfig:
     enable_remote_text: bool = False
     remote_mode: bool = False
     auth_token: SecretValue | None = None
+    allowed_origins: tuple[str, ...] = ()
     log_level: str = "INFO"
 
     @staticmethod
@@ -76,11 +77,20 @@ class RuntimeConfig:
             env_values["allowed_local_roots"] = env["BILI_TRACKER_ALLOWED_LOCAL_ROOTS"].split(
                 os.pathsep
             )
+        if "BILI_TRACKER_ALLOWED_ORIGINS" in env:
+            env_values["allowed_origins"] = [
+                value.strip()
+                for value in env["BILI_TRACKER_ALLOWED_ORIGINS"].split(",")
+                if value.strip()
+            ]
         values.update(env_values)
         values.update({key: value for key, value in (cli or {}).items() if value is not None})
         roots = values.get("allowed_local_roots", ())
         if isinstance(roots, str):
             roots = [roots]
+        origins = values.get("allowed_origins", ())
+        if isinstance(origins, str):
+            origins = [origins]
         return cls(
             host=str(values.get("host", cls.host)),
             port=int(values.get("port", cls.port)),
@@ -94,6 +104,7 @@ class RuntimeConfig:
                 if env.get("BILI_TRACKER_AUTH_TOKEN")
                 else None
             ),
+            allowed_origins=tuple(str(origin) for origin in origins if origin),
             log_level=str(values.get("log_level", cls.log_level)).upper(),
         )
 

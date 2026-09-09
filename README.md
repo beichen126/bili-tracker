@@ -18,6 +18,19 @@ Linux/macOS users can replace the virtual-environment activation command with th
 
 Open `http://127.0.0.1:8300/` after starting the service. FFmpeg is required for media extraction; a local Whisper installation is optional until transcription is requested.
 
+The first-run path is intentionally short: run `doctor`, open the model
+center, accept the applicable model license, install the model, then submit a
+local file from an allowed directory. The page shows model progress and the
+raw/refined/final artifact boundary. For the complete installation matrix,
+model behavior, user workflow and operations checklist, see
+[INSTALL](docs/INSTALL.md), [MODELS](docs/MODELS.md),
+[USER_GUIDE](docs/USER_GUIDE.md) and [OPERATIONS](docs/OPERATIONS.md).
+
+The interface is a keyboard-accessible single-page workbench with five
+surfaces: environment/model center, task submission, task list, task details
+through the API, and controlled settings. It has no bundled media, model
+weights, cookies or credentials.
+
 ## Privacy and safety
 
 - No credentials or cookies are bundled.
