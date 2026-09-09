@@ -31,6 +31,10 @@ def main(argv: list[str] | None = None) -> int:
 
         host = args.host or config.host
         port = args.port or config.port
+        try:
+            config.validate_bind(host)
+        except ValueError as exc:
+            parser.error(str(exc))
         uvicorn.run(create_app(config), host=host, port=port)
         return 0
     parser.print_help()

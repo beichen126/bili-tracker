@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import threading
 import uuid
 from pathlib import Path
@@ -175,6 +176,15 @@ def create_app(
     services = container or AppContainer(settings)
     app = FastAPI(title="bili-tracker", version=__version__)
     app.state.container = services
+
+    @app.middleware("http")
+    async def remote_auth(request, call_next):
+        if services.config.remote_mode:
+            expected = services.config.auth_token.value if services.config.auth_token else ""
+            presented = request.headers.get("authorization", "")
+            if not expected or not secrets.compare_digest(presented, f"Bearer {expected}"):
+                return JSONResponse(status_code=401, content={"error": {"code": "auth.required"}})
+        return await call_next(request)
 
     @app.exception_handler(ApiFailure)
     async def api_failure_handler(_request, exc: ApiFailure):
@@ -365,10 +375,14 @@ def create_app(
         return {"added": added, "rejected": rejected, "duplicate": duplicates}
 
     @app.get("/api/v1/jobs")
-    def list_jobs(limit: int = 100) -> dict[str, object]:
-        if not 1 <= limit <= 1000:
+    def list_jobs(limit: int = 100, offset: int = 0) -> dict[str, object]:
+        if not 1 <= limit <= 1000 or offset < 0:
             raise ApiFailure("job.limit_invalid", status_code=422)
-        return {"jobs": [_job_dto(job) for job in services.repository.list(limit)]}
+        return {
+            "jobs": [_job_dto(job) for job in services.repository.list(limit, offset)],
+            "limit": limit,
+            "offset": offset,
+        }
 
     @app.get("/api/v1/jobs/{job_id}")
     def get_job(job_id: str) -> dict[str, object]:

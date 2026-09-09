@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from bili_tracker.config.runtime import RuntimeConfig
 
 
@@ -19,3 +21,12 @@ def test_config_loading_does_not_create_user_directory(tmp_path: Path):
     target = tmp_path / "not-created"
     RuntimeConfig.load(environ={"APPDATA": str(target)})
     assert not target.exists()
+
+
+def test_non_loopback_bind_requires_explicit_remote_auth():
+    config = RuntimeConfig()
+    with pytest.raises(ValueError, match="remote.mode_required"):
+        config.validate_bind("0.0.0.0")
+    remote = RuntimeConfig(remote_mode=True)
+    with pytest.raises(ValueError, match="remote.auth_required"):
+        remote.validate_bind("0.0.0.0")

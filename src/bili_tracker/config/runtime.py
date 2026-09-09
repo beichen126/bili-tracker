@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from bili_tracker.config.secrets import SecretValue
+
 
 def _default_data_dir() -> Path:
     override = os.environ.get("BILI_TRACKER_DATA_DIR")
@@ -26,6 +28,8 @@ class RuntimeConfig:
     allowed_local_roots: tuple[Path, ...] = ()
     enable_bilibili: bool = False
     enable_remote_text: bool = False
+    remote_mode: bool = False
+    auth_token: SecretValue | None = None
     log_level: str = "INFO"
 
     @staticmethod
@@ -63,6 +67,7 @@ class RuntimeConfig:
         bool_mapping = {
             "enable_bilibili": "BILI_TRACKER_ENABLE_BILIBILI",
             "enable_remote_text": "BILI_TRACKER_ENABLE_REMOTE_TEXT",
+            "remote_mode": "BILI_TRACKER_REMOTE_MODE",
         }
         for key, env_key in bool_mapping.items():
             if env_key in env:
@@ -83,6 +88,12 @@ class RuntimeConfig:
             allowed_local_roots=tuple(Path(root).expanduser() for root in roots if root),
             enable_bilibili=bool(values.get("enable_bilibili", cls.enable_bilibili)),
             enable_remote_text=bool(values.get("enable_remote_text", cls.enable_remote_text)),
+            remote_mode=bool(values.get("remote_mode", cls.remote_mode)),
+            auth_token=(
+                SecretValue(env["BILI_TRACKER_AUTH_TOKEN"])
+                if env.get("BILI_TRACKER_AUTH_TOKEN")
+                else None
+            ),
             log_level=str(values.get("log_level", cls.log_level)).upper(),
         )
 
@@ -93,3 +104,11 @@ class RuntimeConfig:
     def ensure_data_dir(self) -> Path:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         return self.data_dir
+
+    def validate_bind(self, host: str | None = None) -> None:
+        bound_host = host or self.host
+        if bound_host not in {"127.0.0.1", "::1", "localhost"}:
+            if not self.remote_mode:
+                raise ValueError("remote.mode_required")
+            if not self.auth_token or not self.auth_token.is_set:
+                raise ValueError("remote.auth_required")

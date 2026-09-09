@@ -99,12 +99,14 @@ class SQLiteJobRepository:
                 return None
             return self._load_job(connection, row)
 
-    def list(self, limit: int = 100) -> list[Job]:
+    def list(self, limit: int = 100, offset: int = 0) -> list[Job]:
         if not 1 <= limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
         with self._connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+                "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)
             ).fetchall()
             return [self._load_job(connection, row) for row in rows]
 

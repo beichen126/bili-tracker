@@ -32,3 +32,12 @@ def test_artifact_write_is_atomic_and_hash_checked(tmp_path: Path):
         assert getattr(exc, "code", "") == "artifact.hash_mismatch"
     else:
         raise AssertionError("tampered artifact must be rejected")
+
+
+def test_repository_supports_bounded_pagination(tmp_path: Path):
+    repo = SQLiteJobRepository(tmp_path / "jobs.sqlite3")
+    for index in range(3):
+        repo.add(Job(source_ref=f"local:{index}"))
+    page = repo.list(limit=2, offset=1)
+    assert len(page) == 2
+    assert page[0].source_ref == "local:1"

@@ -77,3 +77,20 @@ def test_api_error_has_stable_shape_and_no_exception_details(tmp_path):
     payload = response.json()["error"]
     assert set(payload) == {"code", "message", "request_id", "retryable", "details"}
     assert "Traceback" not in response.text
+
+
+def test_remote_mode_requires_bearer_token_and_does_not_echo_it(tmp_path):
+    from bili_tracker.config.secrets import SecretValue
+
+    config = RuntimeConfig(
+        data_dir=tmp_path,
+        remote_mode=True,
+        auth_token=SecretValue("keep-this-private"),
+    )
+    client = TestClient(create_app(config))
+    assert client.get("/api/v1/health").status_code == 401
+    response = client.get(
+        "/api/v1/health", headers={"Authorization": "Bearer keep-this-private"}
+    )
+    assert response.status_code == 200
+    assert "keep-this-private" not in response.text
