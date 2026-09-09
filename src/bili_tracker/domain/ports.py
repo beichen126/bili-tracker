@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -16,6 +16,7 @@ class SourceCapabilities:
     can_probe: bool
     can_acquire: bool
     requires_credentials: bool = False
+    operations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,7 @@ class TranscriptArtifact:
     model_id: str
     processor_version: str
     artifact: Artifact
+    metadata: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -110,9 +112,18 @@ class ModelRuntime(Protocol):
 
 
 class ArtifactStore(Protocol):
-    def write(self, job: Job, kind: str, content: bytes, media_type: str) -> Artifact: ...
+    def write(
+        self,
+        job: Job,
+        kind: str,
+        content: bytes,
+        media_type: str,
+        derived_from: tuple[str, ...] = (),
+    ) -> Artifact: ...
 
     def read(self, artifact: Artifact) -> bytes: ...
+
+    def delete(self, artifact: Artifact) -> None: ...
 
 
 class JobRepository(Protocol):

@@ -53,7 +53,8 @@ class SQLiteJobRepository:
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         error_code TEXT,
-                        degraded INTEGER NOT NULL DEFAULT 0
+                        degraded INTEGER NOT NULL DEFAULT 0,
+                        progress REAL NOT NULL DEFAULT 0
                     );
                     CREATE TABLE artifacts (
                         job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -74,19 +75,28 @@ class SQLiteJobRepository:
                         outcome TEXT,
                         error_code TEXT
                     );
-                    PRAGMA user_version=1;
+                    PRAGMA user_version=2;
                     INSERT INTO schema_migrations(version, applied_at)
-                    VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+                    VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
                     """
                 )
-            elif current != 1:
+            elif current == 1:
+                connection.execute(
+                    "ALTER TABLE jobs ADD COLUMN progress REAL NOT NULL DEFAULT 0"
+                )
+                connection.execute("PRAGMA user_version=2")
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) "
+                    "VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
+                )
+            elif current != 2:
                 raise RuntimeError(f"unsupported database schema version: {current}")
 
     def add(self, job: Job) -> None:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
-                "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 self._job_values(job),
             )
             self._replace_artifacts(connection, job)
@@ -115,7 +125,8 @@ class SQLiteJobRepository:
             connection.execute("BEGIN IMMEDIATE")
             updated = connection.execute(
                 "UPDATE jobs SET schema_version=?, state=?, source_ref=?, profile_id=?, "
-                "attempts=?, created_at=?, updated_at=?, error_code=?, degraded=? WHERE id=?",
+                "attempts=?, created_at=?, updated_at=?, error_code=?, degraded=?, progress=? "
+                "WHERE id=?",
                 (*self._job_values(job)[1:], str(job.id)),
             ).rowcount
             if updated != 1:
@@ -123,6 +134,13 @@ class SQLiteJobRepository:
                 raise KeyError(str(job.id))
             self._replace_artifacts(connection, job)
             connection.commit()
+
+    def delete(self, job_id: str | UUID) -> bool:
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            deleted = connection.execute("DELETE FROM jobs WHERE id=?", (str(job_id),)).rowcount
+            connection.commit()
+            return deleted == 1
 
     def claim_next(self) -> Job | None:
         with self._connection() as connection:
@@ -137,8 +155,15 @@ class SQLiteJobRepository:
             job = self._load_job(connection, row)
             job.begin_attempt()
             connection.execute(
-                "UPDATE jobs SET state=?, attempts=?, updated_at=?, error_code=NULL WHERE id=?",
-                (job.state.value, job.attempts, job.updated_at.isoformat(), str(job.id)),
+                "UPDATE jobs SET state=?, attempts=?, updated_at=?, error_code=NULL, progress=? "
+                "WHERE id=?",
+                (
+                    job.state.value,
+                    job.attempts,
+                    job.updated_at.isoformat(),
+                    job.progress,
+                    str(job.id),
+                ),
             )
             connection.commit()
             return job
@@ -187,6 +212,7 @@ class SQLiteJobRepository:
             updated_at=datetime.fromisoformat(row["updated_at"]),
             error_code=row["error_code"],
             degraded=bool(row["degraded"]),
+            progress=float(row["progress"]),
         )
         for artifact_row in artifact_rows:
             artifact = self._artifact_from_row(artifact_row)
@@ -206,6 +232,7 @@ class SQLiteJobRepository:
             job.updated_at.isoformat(),
             job.error_code,
             int(job.degraded),
+            job.progress,
         )
 
     @staticmethod

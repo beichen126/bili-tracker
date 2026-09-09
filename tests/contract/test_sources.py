@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
-from bili_tracker.adapters.sources.bilibili import BilibiliClient, BilibiliError
+from bili_tracker.adapters.sources.bilibili import BilibiliClient, BilibiliError, BilibiliSource
 from bili_tracker.adapters.sources.http import HttpResponse, SafeHttpClient
 from bili_tracker.adapters.sources.local_file import LocalFileError, LocalFileSource
 from bili_tracker.adapters.sources.url_policy import UrlPolicy, UrlPolicyError
@@ -78,6 +79,44 @@ def test_bilibili_client_maps_platform_error():
     with pytest.raises(BilibiliError) as error:
         client.video("BV1abCdefGhi")
     assert error.value.code == "source.not_found"
+
+
+def test_bilibili_client_exposes_bounded_public_feeds():
+    row = {"bvid": "BV1abCdefGhi", "title": "<video>", "length": "01:02", "play": 42}
+
+    def transport(method, url, headers, timeout, max_bytes):
+        assert method == "GET"
+        payloads = {
+            "/x/space/wbi/arc/search": {"code": 0, "data": {"list": {"vlist": [row]}}},
+            "/x/web-interface/popular": {"code": 0, "data": {"list": [row]}},
+            "/x/web-interface/ranking/v2": {"code": 0, "data": {"list": [row]}},
+            "/x/web-interface/index/top/rcmd": {"code": 0, "data": {"item": [row]}},
+        }
+        return HttpResponse(
+            200, {}, json.dumps(payloads[urlparse(url).path]).encode("utf-8")
+        )
+
+    client = BilibiliClient(
+        http=SafeHttpClient(
+            policy=UrlPolicy(allowed_hosts=frozenset({"api.bilibili.com"})), transport=transport
+        ),
+        min_interval=0,
+    )
+    assert "space" in BilibiliSource(client).capabilities().operations
+    for values in (
+        client.space(123, page_size=1),
+        client.hot(page_size=1),
+        client.ranking(page_size=1),
+        client.recommendation(page_size=1),
+    ):
+        assert len(values) == 1
+        assert values[0]["bvid"] == row["bvid"]
+        assert values[0]["duration_seconds"] == 62.0
+        assert values[0]["views"] == 42
+
+    with pytest.raises(BilibiliError) as error:
+        client.space(123, page_size=51)
+    assert error.value.code == "source.query_invalid"
 
 
 def test_http_client_rejects_oversized_response():

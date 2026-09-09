@@ -18,7 +18,8 @@ def test_doctor_does_not_print_absolute_data_path(capsys, tmp_path, monkeypatch)
     assert str(tmp_path) not in capsys.readouterr().out
 
 
-def test_api_models_settings_jobs_and_static_ui_are_public_contract(tmp_path):
+def test_api_models_settings_jobs_and_static_ui_are_public_contract(tmp_path, monkeypatch):
+    monkeypatch.setenv("APPDATA", str(tmp_path / "config-home"))
     media = tmp_path / "lesson.wav"
     media.write_bytes(b"RIFF")
     config = RuntimeConfig(data_dir=tmp_path / "data", allowed_local_roots=(tmp_path,))
@@ -56,6 +57,15 @@ def test_api_models_settings_jobs_and_static_ui_are_public_contract(tmp_path):
     )
     assert len(duplicate.json()["duplicate"]) == 1
     assert client.get("/").status_code == 200
+    job_id = jobs.json()["added"][0]["job_id"]
+    detail = client.get(f"/api/v1/jobs/{job_id}")
+    assert detail.status_code == 200
+    assert detail.json()["job"]["source"]["display_locator"] == "lesson.wav"
+    exported = client.get("/api/v1/settings/export")
+    assert exported.status_code == 200
+    assert str(tmp_path) not in exported.text
+    assert "do-not-return-this" not in exported.text
+    assert "secret" not in exported.text
 
 
 def test_packaged_manifest_directory_is_used_when_source_root_is_absent(monkeypatch):
@@ -76,6 +86,23 @@ def test_model_license_gate_is_idempotent(tmp_path):
     assert first.status_code == second.status_code == 202
     assert first.json()["model"]["state"] == "awaiting_license"
     assert second.json()["model"]["state"] == "awaiting_license"
+
+
+def test_job_delete_is_explicit_and_audited(tmp_path):
+    media = tmp_path / "lesson.wav"
+    media.write_bytes(b"RIFF")
+    config = RuntimeConfig(data_dir=tmp_path / "data", allowed_local_roots=(tmp_path,))
+    client = TestClient(create_app(config))
+    response = client.post(
+        "/api/v1/jobs", json={"items": [{"source": {"kind": "local", "locator": str(media)}}]}
+    )
+    job_id = response.json()["added"][0]["job_id"]
+    deleted = client.delete(f"/api/v1/jobs/{job_id}")
+    assert deleted.status_code == 200
+    assert client.get(f"/api/v1/jobs/{job_id}").status_code == 404
+    audit = (config.data_dir / "audit.jsonl").read_text(encoding="utf-8")
+    assert "job.deleted" in audit
+    assert str(tmp_path) not in audit
 
 
 def test_api_error_has_stable_shape_and_no_exception_details(tmp_path):
@@ -106,3 +133,31 @@ def test_remote_mode_requires_bearer_token_and_does_not_echo_it(tmp_path):
         "/api/v1/capabilities", headers={"Authorization": "Bearer keep-this-private"}
     )
     assert {item["id"] for item in capabilities.json()["sources"]} == {"url"}
+
+
+def test_openapi_contains_public_lifecycle_contract(tmp_path):
+    schema = TestClient(create_app(RuntimeConfig(data_dir=tmp_path))).get("/openapi.json").json()
+    expected = {
+        "/api/v1/health",
+        "/api/v1/readiness",
+        "/api/v1/capabilities",
+        "/api/v1/models",
+        "/api/v1/models/{model_id}/install",
+        "/api/v1/models/{model_id}/cancel",
+        "/api/v1/models/{model_id}/verify",
+        "/api/v1/models/{model_id}/repair",
+        "/api/v1/models/{model_id}",
+        "/api/v1/sources/probe",
+        "/api/v1/jobs",
+        "/api/v1/jobs/{job_id}",
+        "/api/v1/jobs/{job_id}/run",
+        "/api/v1/jobs/{job_id}/retry",
+        "/api/v1/jobs/{job_id}/cancel",
+        "/api/v1/jobs/{job_id}/rebuild",
+        "/api/v1/jobs/{job_id}/artifacts",
+        "/api/v1/jobs/{job_id}/artifacts/{kind}",
+        "/api/v1/settings",
+        "/api/v1/settings/export",
+        "/api/v1/backups",
+    }
+    assert expected.issubset(schema["paths"])

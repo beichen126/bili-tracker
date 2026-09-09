@@ -9,6 +9,9 @@
 - Added transparent quantitative discovery ranking and bounded refresh state.
 - Added Windows/Linux CI, release gate, SBOM generation and public adapter,
   installation, user and operations documentation.
+- Added task manifests with provenance, persisted task progress, explicit task
+  and artifact lifecycle operations, model lifecycle CLI commands, and
+  bounded Bilibili space/hot/ranking/recommendation feeds.
 
 ## Unreleased
 

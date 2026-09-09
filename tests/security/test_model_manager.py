@@ -62,6 +62,9 @@ def test_manager_requires_license_then_reaches_ready(tmp_path: Path):
     assert pending.state.value == "awaiting_license"
     ready = manager.install(asset.id, accept_license=True, runtime=FakeRuntime())
     assert ready.state.value == "ready"
+    restored = manager._load(asset)
+    assert restored.license_accepted_version == asset.version
+    assert restored.license_accepted_at
     manager.install(asset.id, accept_license=True, runtime=FakeRuntime())
     assert downloader.calls == 1
 

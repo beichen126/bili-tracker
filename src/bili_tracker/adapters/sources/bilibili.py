@@ -69,8 +69,7 @@ class BilibiliClient:
     def search(
         self, keyword: str, *, page: int = 1, page_size: int = 20
     ) -> list[dict[str, object]]:
-        if not 1 <= page <= 100 or not 1 <= page_size <= 50:
-            raise BilibiliError("source.query_invalid", "page bounds exceeded")
+        self._validate_page(page, page_size)
         value = _clean_text(keyword, max_length=100)
         if not value:
             raise BilibiliError("source.query_invalid", "keyword is empty")
@@ -82,15 +81,75 @@ class BilibiliClient:
         rows = data.get("result", [])
         if not isinstance(rows, list):
             raise BilibiliError("source.schema_invalid", "search result is not a list")
-        result = []
-        for row in rows[:page_size]:
-            if not isinstance(row, Mapping):
-                continue
-            bvid = row.get("bvid")
-            title = _clean_text(row.get("title"), max_length=300)
-            if isinstance(bvid, str) and _BVID.fullmatch(bvid) and title:
-                result.append({"bvid": bvid, "title": title, "url": f"https://www.bilibili.com/video/{bvid}"})
-        return result
+        return _video_rows(rows, page_size)
+
+    def space(
+        self, mid: int | str, *, page: int = 1, page_size: int = 20
+    ) -> list[dict[str, object]]:
+        """Return a bounded list of videos published by a creator."""
+        self._validate_page(page, page_size)
+        try:
+            creator_id = int(mid)
+        except (TypeError, ValueError) as exc:
+            raise BilibiliError("source.query_invalid", "mid must be numeric") from exc
+        if creator_id <= 0:
+            raise BilibiliError("source.query_invalid", "mid must be positive")
+        payload = self._get(
+            "/x/space/wbi/arc/search",
+            {"mid": creator_id, "pn": page, "ps": page_size, "order": "pubdate"},
+        )
+        data = self._mapping(payload, "space")
+        listing = data.get("list", data)
+        if isinstance(listing, Mapping):
+            rows = listing.get("vlist", listing.get("list", []))
+        else:
+            rows = listing
+        if not isinstance(rows, list):
+            raise BilibiliError("source.schema_invalid", "space result is not a list")
+        return _video_rows(rows, page_size)
+
+    def hot(self, *, page: int = 1, page_size: int = 20) -> list[dict[str, object]]:
+        """Return the anonymous popular feed, capped for predictable API use."""
+        self._validate_page(page, page_size)
+        payload = self._get("/x/web-interface/popular", {"pn": page, "ps": page_size})
+        data = self._mapping(payload, "hot")
+        rows = data.get("list", [])
+        if not isinstance(rows, list):
+            raise BilibiliError("source.schema_invalid", "hot result is not a list")
+        return _video_rows(rows, page_size)
+
+    def ranking(self, *, ranking_id: int = 0, page_size: int = 20) -> list[dict[str, object]]:
+        """Return the current public ranking without accepting arbitrary endpoints."""
+        if not 0 <= ranking_id <= 99 or not 1 <= page_size <= 50:
+            raise BilibiliError("source.query_invalid", "ranking bounds exceeded")
+        payload = self._get(
+            "/x/web-interface/ranking/v2",
+            {"rid": ranking_id, "type": "all", "page_size": page_size},
+        )
+        data = self._mapping(payload, "ranking")
+        rows = data.get("list", [])
+        if not isinstance(rows, list):
+            raise BilibiliError("source.schema_invalid", "ranking result is not a list")
+        return _video_rows(rows, page_size)
+
+    def recommendation(self, *, page_size: int = 20) -> list[dict[str, object]]:
+        """Return the anonymous recommendation feed with a fixed page cap."""
+        if not 1 <= page_size <= 50:
+            raise BilibiliError("source.query_invalid", "page size bounds exceeded")
+        payload = self._get(
+            "/x/web-interface/index/top/rcmd",
+            {"fresh_type": 4, "ps": page_size},
+        )
+        data = payload
+        rows: object = data.get("item", []) if "item" in data else data.get("list", [])
+        if not isinstance(rows, list):
+            raise BilibiliError("source.schema_invalid", "recommendation result is not a list")
+        return _video_rows(rows, page_size)
+
+    @staticmethod
+    def _validate_page(page: int, page_size: int) -> None:
+        if not 1 <= page <= 100 or not 1 <= page_size <= 50:
+            raise BilibiliError("source.query_invalid", "page bounds exceeded")
 
     def _get(self, path: str, params: Mapping[str, object]) -> Mapping[str, object]:
         delay = self.min_interval - (time.monotonic() - self._last_request)
@@ -145,7 +204,12 @@ class BilibiliSource:
         self.downloader = downloader or YtDlpSource(allowed_domains=("bilibili.com", "b23.tv"))
 
     def capabilities(self) -> SourceCapabilities:
-        return SourceCapabilities(can_probe=True, can_acquire=True, requires_credentials=False)
+        return SourceCapabilities(
+            can_probe=True,
+            can_acquire=True,
+            requires_credentials=False,
+            operations=("video", "space", "search", "hot", "ranking", "recommendation"),
+        )
 
     def probe(self, source: SourceInput) -> SourceMetadata:
         video = self.client.video(source.locator)
@@ -162,3 +226,47 @@ def _clean_text(value: object, *, max_length: int) -> str:
     if not isinstance(value, str):
         return ""
     return html.escape(" ".join(value.split()), quote=True)[:max_length]
+
+
+def _video_rows(rows: list[object], limit: int) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    for row in rows[:limit]:
+        if not isinstance(row, Mapping):
+            continue
+        bvid = row.get("bvid") or row.get("bv_id")
+        title = _clean_text(row.get("title"), max_length=300)
+        if not isinstance(bvid, str) or not _BVID.fullmatch(bvid) or not title:
+            continue
+        duration = _duration_seconds(row.get("duration") or row.get("length"))
+        stats = row.get("stat")
+        views = row.get("views") or row.get("play")
+        if isinstance(stats, Mapping):
+            views = views or stats.get("view")
+        try:
+            view_count = max(0, int(views or 0))
+        except (TypeError, ValueError):
+            view_count = 0
+        result.append(
+            {
+                "bvid": bvid,
+                "title": title,
+                "url": f"https://www.bilibili.com/video/{bvid}",
+                "duration_seconds": duration,
+                "views": view_count,
+            }
+        )
+    return result
+
+
+def _duration_seconds(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    parts = value.split(":")
+    if not 1 <= len(parts) <= 3 or not all(part.isdigit() for part in parts):
+        return None
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + int(part)
+    return float(seconds)

@@ -8,3 +8,4 @@ enable_remote_text = false
 remote_mode = false
 allowed_origins = []
 log_level = "INFO"
+max_concurrent_jobs = 1

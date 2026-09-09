@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from bili_tracker.application.pipeline import JobRunner
@@ -49,6 +50,13 @@ class FailingProcessor(TextProcessor):
         raise RuntimeError("text.processor_unavailable")
 
 
+class FailingTranscriber(Transcriber):
+    id = "failing-transcriber"
+
+    def transcribe(self, media, options, progress):
+        raise RuntimeError("transcriber.failed")
+
+
 class UpperProcessor(TextProcessor):
     id = "upper"
 
@@ -77,8 +85,20 @@ def test_local_pipeline_preserves_raw_and_builds_final(tmp_path: Path):
     repo.add(job)
     result = run.run(job)
     assert result.job.state.value == "completed"
-    assert set(result.job.artifacts) == {ArtifactKind.RAW, ArtifactKind.FINAL}
+    assert set(result.job.artifacts) == {
+        ArtifactKind.MANIFEST,
+        ArtifactKind.RAW,
+        ArtifactKind.FINAL,
+    }
     assert result.job.degraded is False
+    manifest = json.loads(
+        (tmp_path / "artifacts" / str(job.id) / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["state"] == "completed"
+    assert manifest["processing"]["model_id"] == "fake-model"
+    assert "test.wav" in manifest["source"]["display_locator"]
+    assert manifest["artifacts"]["final"]["derived_from"] == [f"{job.id}/raw.txt"]
+    assert str(tmp_path) not in json.dumps(manifest)
 
 
 def test_processor_failure_preserves_raw_as_degraded_final(tmp_path: Path):
@@ -89,7 +109,11 @@ def test_processor_failure_preserves_raw_as_degraded_final(tmp_path: Path):
     result = run.run(job)
     assert result.job.state.value == "completed"
     assert result.job.degraded is True
-    assert set(result.job.artifacts) == {ArtifactKind.RAW, ArtifactKind.FINAL}
+    assert set(result.job.artifacts) == {
+        ArtifactKind.MANIFEST,
+        ArtifactKind.RAW,
+        ArtifactKind.FINAL,
+    }
 
 
 def test_processor_failure_fail_job_is_stable(tmp_path: Path):
@@ -100,3 +124,43 @@ def test_processor_failure_fail_job_is_stable(tmp_path: Path):
     result = run.run(job)
     assert result.job.state.value == "failed"
     assert ArtifactKind.RAW in result.job.artifacts
+
+
+def test_transcriber_failure_still_writes_diagnostic_manifest(tmp_path: Path):
+    repo = SQLiteJobRepository(tmp_path / "app.sqlite3")
+    store = LocalArtifactStore(tmp_path / "artifacts")
+    run = JobRunner(
+        repo,
+        store,
+        FakeSource(),
+        FailingTranscriber(),
+        ProcessingProfile("default"),
+    )
+    job = Job(source_ref="local:test.wav")
+    repo.add(job)
+    result = run.run(job)
+    assert result.job.state.value == "failed"
+    assert result.job.error_code == "transcriber.failed"
+    assert ArtifactKind.MANIFEST in result.job.artifacts
+    manifest = json.loads(
+        (tmp_path / "artifacts" / str(job.id) / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["error_code"] == "transcriber.failed"
+
+
+def test_rebuild_reuses_raw_without_reacquiring(tmp_path: Path):
+    repo, run = runner(tmp_path, ProcessingProfile("default"), UpperProcessor())
+    job = Job(source_ref="local:test.wav")
+    repo.add(job)
+    first = run.run(job)
+    raw = first.job.artifacts[ArtifactKind.RAW]
+    for kind in (ArtifactKind.REFINED, ArtifactKind.FINAL, ArtifactKind.MANIFEST):
+        artifact = job.artifacts[kind]
+        run.artifact_store.delete(artifact)
+        job.remove_artifact(kind)
+    job.rebuild_derived()
+    repo.save(job)
+    second = run.run(job)
+    assert second.job.state.value == "completed"
+    assert second.job.artifacts[ArtifactKind.RAW] == raw
+    assert run.artifact_store.read(raw) == b"raw transcript"

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import tempfile
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -32,6 +34,7 @@ class RuntimeConfig:
     auth_token: SecretValue | None = None
     allowed_origins: tuple[str, ...] = ()
     log_level: str = "INFO"
+    max_concurrent_jobs: int = 1
 
     @staticmethod
     def user_config_path(environ: Mapping[str, str] | None = None) -> Path:
@@ -61,6 +64,7 @@ class RuntimeConfig:
             "port": "BILI_TRACKER_PORT",
             "data_dir": "BILI_TRACKER_DATA_DIR",
             "log_level": "BILI_TRACKER_LOG_LEVEL",
+            "max_concurrent_jobs": "BILI_TRACKER_MAX_CONCURRENT_JOBS",
         }
         for key, env_key in mapping.items():
             if env_key in env and env[env_key] != "":
@@ -91,6 +95,9 @@ class RuntimeConfig:
         origins = values.get("allowed_origins", ())
         if isinstance(origins, str):
             origins = [origins]
+        max_concurrent_jobs = int(values.get("max_concurrent_jobs", cls.max_concurrent_jobs))
+        if not 1 <= max_concurrent_jobs <= 16:
+            raise ValueError("max_concurrent_jobs must be between 1 and 16")
         return cls(
             host=str(values.get("host", cls.host)),
             port=int(values.get("port", cls.port)),
@@ -106,11 +113,51 @@ class RuntimeConfig:
             ),
             allowed_origins=tuple(str(origin) for origin in origins if origin),
             log_level=str(values.get("log_level", cls.log_level)).upper(),
+            max_concurrent_jobs=max_concurrent_jobs,
         )
 
     @classmethod
     def from_env(cls) -> RuntimeConfig:
         return cls.load()
+
+    @classmethod
+    def save_user_config(
+        cls, updates: Mapping[str, object], environ: Mapping[str, str] | None = None
+    ) -> Path:
+        """Persist only non-secret, user-level settings using an atomic replace."""
+        allowed = {
+            "host",
+            "port",
+            "data_dir",
+            "allowed_local_roots",
+            "enable_bilibili",
+            "enable_remote_text",
+            "remote_mode",
+            "allowed_origins",
+            "log_level",
+            "max_concurrent_jobs",
+        }
+        path = cls.user_config_path(environ)
+        values: dict[str, object] = {}
+        if path.is_file():
+            with path.open("rb") as handle:
+                values.update(tomllib.load(handle))
+        values.update({key: value for key, value in updates.items() if key in allowed})
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = "\n".join(
+            f"{key} = {_toml_literal(values[key])}" for key in sorted(values)
+        ) + "\n"
+        descriptor, temporary = tempfile.mkstemp(prefix="config.", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except BaseException:
+            Path(temporary).unlink(missing_ok=True)
+            raise
+        return path
 
     def ensure_data_dir(self) -> Path:
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -123,3 +170,13 @@ class RuntimeConfig:
                 raise ValueError("remote.mode_required")
             if not self.auth_token or not self.auth_token.is_set:
                 raise ValueError("remote.auth_required")
+
+
+def _toml_literal(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_toml_literal(item) for item in value) + "]"
+    return json.dumps(str(value), ensure_ascii=False)

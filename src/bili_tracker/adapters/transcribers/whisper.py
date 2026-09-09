@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from bili_tracker.domain.jobs import Artifact, ArtifactKind
@@ -50,6 +52,7 @@ class WhisperTranscriber(Transcriber):
         options: TranscriptionOptions,
         progress: ProgressSink,
     ) -> TranscriptArtifact:
+        started = monotonic()
         device = options.device
         if device == "auto":
             try:
@@ -74,4 +77,16 @@ class WhisperTranscriber(Transcriber):
             sha256="",
             media_type="text/plain",
         )
-        return TranscriptArtifact(text, options.language, self.model_id, "whisper", artifact)
+        return TranscriptArtifact(
+            text,
+            options.language,
+            self.model_id,
+            "whisper",
+            artifact,
+            metadata={
+                "device": device,
+                "language": options.language,
+                "started_at": datetime.now(UTC).isoformat(),
+                "elapsed_seconds": round(monotonic() - started, 3),
+            },
+        )

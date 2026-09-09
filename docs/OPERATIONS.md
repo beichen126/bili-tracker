@@ -23,6 +23,11 @@ Run `bili-tracker doctor` for a redacted local configuration check. Health is
 deliberately minimal. Use the model center error code and the job error code
 for support; preserve the raw artifact before attempting a rebuild.
 
+The model lifecycle is also available as machine-readable CLI commands:
+`bili-tracker models list`, `install`, `cancel`, `verify`, `repair` and
+`remove`. `python scripts/release/benchmark_jobs.py` measures the 1,000-job
+list endpoint and fails when the local P95 exceeds 300 ms.
+
 ## Security
 
 Keep the default loopback binding for single-user use. Remote mode requires an

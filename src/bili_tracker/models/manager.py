@@ -4,7 +4,9 @@ import json
 import os
 import shutil
 import threading
+import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 from bili_tracker.domain.models import ManagedModel, ModelAsset, ModelState
@@ -46,6 +48,10 @@ class ModelManager:
             asset = self.registry.get(model_id)
             model = self._load(asset)
             if model.state == ModelState.READY and self.verify(model_id):
+                if accept_license and model.license_accepted_version != asset.version:
+                    model.license_accepted_version = asset.version
+                    model.license_accepted_at = datetime.now(UTC).isoformat()
+                    self._save(model)
                 return model
             if model.state == ModelState.READY:
                 model.transition(ModelState.CHECKING)
@@ -56,6 +62,9 @@ class ModelManager:
                     model.transition(ModelState.AWAITING_LICENSE)
                 self._save(model)
                 return model
+            if model.license_accepted_version != asset.version:
+                model.license_accepted_version = asset.version
+                model.license_accepted_at = datetime.now(UTC).isoformat()
             available = shutil.disk_usage(self.model_root).free
             if available < asset.size_bytes:
                 if model.state == ModelState.CHECKING:
@@ -80,11 +89,21 @@ class ModelManager:
             active_cancel = cancel_event or threading.Event()
             self._cancel_events[model_id] = active_cancel
             self._save(model)
+            download_started = time.monotonic()
+            last_saved = [download_started]
+
+            def download_progress(done: int, total: int) -> None:
+                self._progress(model, done, total, progress, download_started)
+                now = time.monotonic()
+                if done == total or now - last_saved[0] >= 1.0:
+                    self._save(model)
+                    last_saved[0] = now
+
             try:
                 result = self.downloader.download(
                     asset,
                     self.model_root,
-                    progress=lambda done, total: self._progress(model, done, total, progress),
+                    progress=download_progress,
                     cancel_event=active_cancel,
                 )
             except DownloadCancelled as exc:
@@ -173,8 +192,11 @@ class ModelManager:
                 asset=asset,
                 state=ModelState(record.get("state", ModelState.NOT_INSTALLED.value)),
                 downloaded_bytes=int(record.get("downloaded_bytes", 0)),
+                speed_bytes_per_sec=float(record.get("speed_bytes_per_sec", 0.0)),
                 operation_id=record.get("operation_id"),
                 error_code=record.get("error_code"),
+                license_accepted_version=record.get("license_accepted_version"),
+                license_accepted_at=record.get("license_accepted_at"),
             )
         except (OSError, ValueError, KeyError):
             return ManagedModel(asset)
@@ -190,8 +212,11 @@ class ModelManager:
             "version": model.asset.version,
             "state": model.state.value,
             "downloaded_bytes": model.downloaded_bytes,
+            "speed_bytes_per_sec": model.speed_bytes_per_sec,
             "operation_id": model.operation_id,
             "error_code": model.error_code,
+            "license_accepted_version": model.license_accepted_version,
+            "license_accepted_at": model.license_accepted_at,
         }
         temp = self.state_path.with_suffix(".tmp")
         temp.write_text(json.dumps(values, indent=2), encoding="utf-8")
@@ -203,7 +228,10 @@ class ModelManager:
         done: int,
         total: int,
         callback: ProgressSink | None,
+        started_at: float,
     ) -> None:
         model.downloaded_bytes = done
+        elapsed = max(time.monotonic() - started_at, 0.001)
+        model.speed_bytes_per_sec = done / elapsed
         if callback:
             callback(done / total if total else 0.0, "downloading")

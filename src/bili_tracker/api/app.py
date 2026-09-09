@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import secrets
+import shutil
 import threading
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -18,10 +21,12 @@ from bili_tracker.adapters.models.whisper import WhisperRuntime
 from bili_tracker.adapters.sources.bilibili import BilibiliClient, BilibiliSource
 from bili_tracker.adapters.sources.local_file import LocalFileSource
 from bili_tracker.adapters.sources.ytdlp import YtDlpSource
+from bili_tracker.adapters.text.ollama import OllamaTextProcessor
 from bili_tracker.adapters.transcribers.whisper import WhisperTranscriber
 from bili_tracker.application.discovery import Candidate, QuantitativeRanker
 from bili_tracker.application.pipeline import JobRunner
 from bili_tracker.config.runtime import RuntimeConfig
+from bili_tracker.domain.errors import InvariantViolation
 from bili_tracker.domain.jobs import ArtifactKind, Job, JobState
 from bili_tracker.domain.models import ManagedModel, ModelState
 from bili_tracker.domain.ports import SourceAdapter, SourceInput
@@ -78,6 +83,7 @@ class AppContainer:
         self.config = config
         data_dir = config.ensure_data_dir()
         self.repository = SQLiteJobRepository(data_dir / "jobs.sqlite3")
+        self.repository.recover_incomplete()
         self.artifacts = LocalArtifactStore(data_dir / "artifacts")
         self.backups = BackupManager(data_dir, self.repository)
         self.model_root = data_dir / "models"
@@ -98,6 +104,7 @@ class AppContainer:
         self.job_operations: dict[str, str] = {}
         self.model_operations: dict[str, str] = {}
         self._operation_lock = threading.Lock()
+        self.job_slots = threading.BoundedSemaphore(config.max_concurrent_jobs)
 
     def source(self, kind: str) -> SourceAdapter:
         try:
@@ -129,37 +136,43 @@ class AppContainer:
             return operation_id
 
     def _run_job(self, job_id: str) -> None:
-        job = self.repository.get(job_id)
-        if job is None:
-            return
-        try:
-            source_kind, _ = job.source_ref.split(":", 1)
-            source = self.source(source_kind)
-            whisper_asset = self.registry.get("whisper-large-v3-turbo")
-            model_path = self.model_root / whisper_asset.filename
-            if not model_path.is_file():
-                job.begin_attempt()
-                job.fail("model.not_ready")
-                self.repository.save(job)
+        with self.job_slots:
+            job = self.repository.get(job_id)
+            if job is None:
                 return
-            runner = JobRunner(
-                self.repository,
-                self.artifacts,
-                source,
-                WhisperTranscriber(model_path),
-                ProcessingProfile(job.profile_id),
-            )
-            runner.run(job)
-        except Exception:
-            if job.state in {
-                JobState.ACQUIRING,
-                JobState.TRANSCRIBING,
-                JobState.REFINING,
-                JobState.REVIEWING,
-                JobState.PACKAGING,
-            }:
-                job.fail("job.worker_failed")
-                self.repository.save(job)
+            try:
+                source_kind, _ = job.source_ref.split(":", 1)
+                source = self.source(source_kind)
+                whisper_asset = self.registry.get("whisper-large-v3-turbo")
+                model_path = self.model_root / whisper_asset.filename
+                if not model_path.is_file():
+                    job.begin_attempt()
+                    job.fail("model.not_ready")
+                    self.repository.save(job)
+                    return
+                runner = JobRunner(
+                    self.repository,
+                    self.artifacts,
+                    source,
+                    WhisperTranscriber(model_path),
+                    ProcessingProfile(job.profile_id),
+                    text_processor=(
+                        OllamaTextProcessor()
+                        if self.settings.get("enable_remote_text")
+                        else None
+                    ),
+                )
+                runner.run(job)
+            except Exception:
+                if job.state in {
+                    JobState.ACQUIRING,
+                    JobState.TRANSCRIBING,
+                    JobState.REFINING,
+                    JobState.REVIEWING,
+                    JobState.PACKAGING,
+                }:
+                    job.fail("job.worker_failed")
+                    self.repository.save(job)
 
     def model(self, model_id: str) -> ManagedModel:
         try:
@@ -193,7 +206,18 @@ def create_app(
             expected = services.config.auth_token.value if services.config.auth_token else ""
             presented = request.headers.get("authorization", "")
             if not expected or not secrets.compare_digest(presented, f"Bearer {expected}"):
-                return JSONResponse(status_code=401, content={"error": {"code": "auth.required"}})
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "error": {
+                            "code": "auth.required",
+                            "message": "需要有效的 Bearer token。",
+                            "request_id": uuid.uuid4().hex,
+                            "retryable": False,
+                            "details": {},
+                        }
+                    },
+                )
         return await call_next(request)
 
     @app.exception_handler(ApiFailure)
@@ -231,7 +255,11 @@ def create_app(
             ],
             "transcribers": [{"id": "whisper", "optional_dependency": "asr"}],
             "text_processors": [{"id": "ollama", "optional_dependency": "models"}],
-            "limits": {"batch_items": 100, "max_local_bytes": 20_000_000_000},
+            "limits": {
+                "batch_items": 100,
+                "max_local_bytes": 20_000_000_000,
+                "max_concurrent_jobs": services.config.max_concurrent_jobs,
+            },
         }
 
     @app.get("/api/v1/models")
@@ -405,6 +433,25 @@ def create_app(
     def get_job(job_id: str) -> dict[str, object]:
         return {"job": _job_dto(_job(services, job_id))}
 
+    @app.delete("/api/v1/jobs/{job_id}")
+    def delete_job(job_id: str) -> dict[str, object]:
+        job = _job(services, job_id)
+        if job.state in {
+            JobState.ACQUIRING,
+            JobState.TRANSCRIBING,
+            JobState.REFINING,
+            JobState.REVIEWING,
+            JobState.PACKAGING,
+        }:
+            raise ApiFailure("job.active", status_code=409)
+        job_dir = services.artifacts.job_dir(str(job.id))
+        if job_dir.exists():
+            shutil.rmtree(job_dir)
+        if not services.repository.delete(job.id):
+            raise ApiFailure("job.not_found", status_code=404)
+        _append_audit_event(services.config.data_dir, "job.deleted", str(job.id))
+        return {"deleted": str(job.id)}
+
     @app.post("/api/v1/jobs/{job_id}/run", status_code=202)
     def run_job(job_id: str) -> dict[str, object]:
         return {"operation_id": services.start_job(job_id)}
@@ -413,6 +460,7 @@ def create_app(
     def retry_job(job_id: str) -> dict[str, object]:
         job = _job(services, job_id)
         try:
+            _clear_derived_artifacts(services, job, keep_manifest=True)
             job.retry()
         except Exception as exc:
             raise ApiFailure("job.not_retryable", status_code=409) from exc
@@ -433,6 +481,7 @@ def create_app(
     def rebuild_job(job_id: str) -> dict[str, object]:
         job = _job(services, job_id)
         try:
+            _clear_derived_artifacts(services, job)
             job.rebuild_derived()
         except Exception as exc:
             raise ApiFailure("job.not_rebuildable", status_code=409) from exc
@@ -445,13 +494,50 @@ def create_app(
         try:
             artifact = job.artifacts[ArtifactKind(kind)]
             content = services.artifacts.read(artifact)
-        except (KeyError, ValueError) as exc:
+        except (KeyError, ValueError, FileNotFoundError, InvariantViolation) as exc:
             raise ApiFailure("artifact.not_found", status_code=404) from exc
         return Response(
             content,
             media_type=artifact.media_type,
-            headers={"Content-Disposition": f'attachment; filename="{kind}"'},
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{artifact.relative_path.rsplit("/", 1)[-1]}"'
+                )
+            },
         )
+
+    @app.get("/api/v1/jobs/{job_id}/artifacts")
+    def list_artifacts(job_id: str) -> dict[str, object]:
+        job = _job(services, job_id)
+        return {
+            "artifacts": [
+                {
+                    "kind": artifact.kind.value,
+                    "media_type": artifact.media_type,
+                    "derived_from": list(artifact.derived_from),
+                    "download_url": f"/api/v1/jobs/{job.id}/artifacts/{artifact.kind.value}",
+                }
+                for artifact in job.artifacts.values()
+            ]
+        }
+
+    @app.delete("/api/v1/jobs/{job_id}/artifacts/{kind}")
+    def delete_artifact(job_id: str, kind: str) -> dict[str, object]:
+        job = _job(services, job_id)
+        try:
+            artifact_kind = ArtifactKind(kind)
+            if (
+                artifact_kind in {ArtifactKind.RAW, ArtifactKind.FINAL}
+                and job.state == JobState.COMPLETED
+            ):
+                raise ApiFailure("artifact.required", status_code=409)
+            artifact = job.artifacts[artifact_kind]
+            services.artifacts.delete(artifact)
+            job.remove_artifact(artifact_kind)
+        except (KeyError, ValueError, FileNotFoundError) as exc:
+            raise ApiFailure("artifact.not_found", status_code=404) from exc
+        services.repository.save(job)
+        return {"deleted": kind, "job": _job_dto(job)}
 
     @app.get("/api/v1/settings")
     def get_settings() -> dict[str, object]:
@@ -463,11 +549,45 @@ def create_app(
         for key in ("enable_bilibili", "enable_remote_text"):
             if key in values:
                 services.settings[key] = bool(values[key])
+        if any(key in values for key in ("enable_bilibili", "enable_remote_text")):
+            RuntimeConfig.save_user_config(
+                {
+                    key: services.settings[key]
+                    for key in ("enable_bilibili", "enable_remote_text")
+                }
+            )
         if body.bilibili_cookie is not None:
             services.settings["bilibili_cookie_configured"] = bool(body.bilibili_cookie)
         if body.deepseek_api_key is not None:
             services.settings["deepseek_api_key_configured"] = bool(body.deepseek_api_key)
         return {"settings": dict(services.settings)}
+
+    @app.get("/api/v1/settings/export")
+    def export_settings() -> Response:
+        payload = {
+            "format": "bili-tracker-settings",
+            "version": 1,
+            "settings": {
+                "enable_bilibili": bool(services.settings["enable_bilibili"]),
+                "enable_remote_text": bool(services.settings["enable_remote_text"]),
+                "bilibili_cookie_configured": bool(
+                    services.settings["bilibili_cookie_configured"]
+                ),
+                "deepseek_api_key_configured": bool(
+                    services.settings["deepseek_api_key_configured"]
+                ),
+                "allowed_local_roots_configured": bool(
+                    services.config.allowed_local_roots
+                ),
+                "remote_mode": services.config.remote_mode,
+                "max_concurrent_jobs": services.config.max_concurrent_jobs,
+            },
+        }
+        return Response(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="settings.json"'},
+        )
 
     @app.post("/api/v1/backups", status_code=201)
     def create_backup() -> dict[str, object]:
@@ -558,12 +678,19 @@ def _model_dto(manager: ModelManager, model_id: str) -> dict[str, object]:
         "filename": asset.filename,
         "size_bytes": asset.size_bytes,
         "license": {"id": asset.license_id, "url": asset.license_url},
+        "sources": list(asset.sources),
+        "resource_hints": dict(asset.resource_hints),
         "runtime": asset.runtime,
         "state": model.state.value,
         "downloaded_bytes": model.downloaded_bytes,
+        "remaining_bytes": max(0, asset.size_bytes - model.downloaded_bytes),
+        "speed_bytes_per_sec": round(model.speed_bytes_per_sec, 2),
+        "disk_footprint_bytes": model.downloaded_bytes,
         "progress": min(1.0, model.downloaded_bytes / asset.size_bytes),
         "operation_id": model.operation_id,
         "error_code": model.error_code,
+        "license_accepted_version": model.license_accepted_version,
+        "license_accepted_at": model.license_accepted_at,
     }
 
 
@@ -575,7 +702,7 @@ def _job(services: AppContainer, job_id: str) -> Job:
 
 
 def _job_dto(job: Job) -> dict[str, object]:
-    kind, locator = job.source_ref.partition(":")
+    kind, _, locator = job.source_ref.partition(":")
     return {
         "id": str(job.id),
         "state": job.state.value,
@@ -584,13 +711,48 @@ def _job_dto(job: Job) -> dict[str, object]:
         "attempts": job.attempts,
         "error_code": job.error_code,
         "degraded": job.degraded,
+        "progress": round(job.progress, 4),
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
         "artifacts": [
-            {"kind": artifact.kind.value, "media_type": artifact.media_type}
+            {
+                "kind": artifact.kind.value,
+                "media_type": artifact.media_type,
+                "derived_from": list(artifact.derived_from),
+                "download_url": f"/api/v1/jobs/{job.id}/artifacts/{artifact.kind.value}",
+            }
             for artifact in job.artifacts.values()
         ],
     }
+
+
+def _clear_derived_artifacts(
+    services: AppContainer, job: Job, *, keep_manifest: bool = False
+) -> None:
+    kinds = [ArtifactKind.REFINED, ArtifactKind.FINAL]
+    if not keep_manifest:
+        kinds.append(ArtifactKind.MANIFEST)
+    for kind in kinds:
+        artifact = job.artifacts.get(kind)
+        if artifact is None:
+            continue
+        try:
+            services.artifacts.delete(artifact)
+        except FileNotFoundError:
+            pass
+        job.remove_artifact(kind)
+
+
+def _append_audit_event(data_dir: Path, event: str, job_id: str) -> None:
+    audit_path = data_dir / "audit.jsonl"
+    with audit_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {"event": event, "job_id": job_id, "at": datetime.now(UTC).isoformat()},
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
 
 
 def _safe_source(kind: str, locator: str) -> dict[str, str]:

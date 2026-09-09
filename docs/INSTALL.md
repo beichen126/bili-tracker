@@ -33,6 +33,10 @@ either optional group. Configure one or more allowed local input directories
 with `BILI_TRACKER_ALLOWED_LOCAL_ROOTS`; no local directory is accepted by
 default.
 
+Use `BILI_TRACKER_MAX_CONCURRENT_JOBS` (or `--max-concurrent-jobs` on
+`serve`) to change the worker limit. The safe default is one ASR job at a
+time, which avoids unexpected GPU contention.
+
 For a remote deployment, set `BILI_TRACKER_REMOTE_MODE=true` and provide a
 non-empty `BILI_TRACKER_AUTH_TOKEN`. A non-loopback bind without both settings
 is rejected. Keep the service behind an authenticated TLS reverse proxy and

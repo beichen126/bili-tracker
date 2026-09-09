@@ -28,8 +28,13 @@ model behavior, user workflow and operations checklist, see
 
 The interface is a keyboard-accessible single-page workbench with five
 surfaces: environment/model center, task submission, task list, task details
-through the API, and controlled settings. It has no bundled media, model
+and controlled settings. It has no bundled media, model
 weights, cookies or credentials.
+
+Model lifecycle commands are also available without the UI:
+`bili-tracker models list|install|cancel|verify|repair|remove`. Task results
+include a JSON manifest linking raw, refined and final artifacts without
+recording private absolute paths.
 
 ## Privacy and safety
 

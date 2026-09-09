@@ -119,8 +119,11 @@ class ManagedModel:
     asset: ModelAsset
     state: ModelState = ModelState.NOT_INSTALLED
     downloaded_bytes: int = 0
+    speed_bytes_per_sec: float = 0.0
     operation_id: str | None = None
     error_code: str | None = None
+    license_accepted_version: str | None = None
+    license_accepted_at: str | None = None
 
     def transition(self, target: ModelState) -> None:
         if target not in _MODEL_TRANSITIONS[self.state]:

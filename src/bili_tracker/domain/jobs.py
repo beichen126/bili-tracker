@@ -26,6 +26,7 @@ class JobState(StrEnum):
 
 
 class ArtifactKind(StrEnum):
+    MANIFEST = "manifest"
     RAW = "raw"
     REFINED = "refined"
     FINAL = "final"
@@ -71,12 +72,26 @@ class Job:
     updated_at: datetime = field(default_factory=utc_now)
     error_code: str | None = None
     degraded: bool = False
+    progress: float = 0.0
     artifacts: dict[ArtifactKind, Artifact] = field(default_factory=dict)
 
     def transition(self, target: JobState) -> None:
         if target not in _TRANSITIONS[self.state]:
             raise InvalidTransition("job", self.state.value, target.value)
         self.state = target
+        self.progress = {
+            JobState.QUEUED: 0.0,
+            JobState.ACQUIRING: 0.05,
+            JobState.TRANSCRIBING: 0.2,
+            JobState.REFINING: 0.8,
+            JobState.REVIEWING: 0.9,
+            JobState.PACKAGING: 0.95,
+            JobState.COMPLETED: 1.0,
+        }.get(target, self.progress)
+        self.updated_at = utc_now()
+
+    def set_progress(self, value: float) -> None:
+        self.progress = min(1.0, max(0.0, float(value)))
         self.updated_at = utc_now()
 
     def begin_attempt(self) -> None:
@@ -116,6 +131,16 @@ class Job:
         self.artifacts[artifact.kind] = artifact
         self.updated_at = utc_now()
 
+    def remove_artifact(self, kind: ArtifactKind) -> Artifact:
+        try:
+            artifact = self.artifacts.pop(kind)
+        except KeyError as exc:
+            raise InvariantViolation(
+                "artifact.not_found", f"artifact does not exist: {kind.value}"
+            ) from exc
+        self.updated_at = utc_now()
+        return artifact
+
     def complete(self, *, degraded: bool = False) -> None:
         if self.state != JobState.PACKAGING:
             raise InvalidTransition("job", self.state.value, JobState.COMPLETED.value)
@@ -133,6 +158,7 @@ class Job:
             raise InvalidTransition("job", self.state.value, JobState.REFINING.value)
         self.artifacts.pop(ArtifactKind.REFINED, None)
         self.artifacts.pop(ArtifactKind.FINAL, None)
+        self.artifacts.pop(ArtifactKind.MANIFEST, None)
         self.degraded = False
         self.transition(JobState.REFINING)
 
